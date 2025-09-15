@@ -1,0 +1,15 @@
+[
+  {
+    "url": "https://t-nation.com/sample-article",
+    "title": "Sample T-Nation Workout Article",
+    "author": "Fitness Expert",
+    "content": "This is a sample fitness article about strength training and muscle building techniques.",
+    "word_count": 1250,
+    "reading_time": 6,
+    "exercises_mentioned": ["squat", "deadlift", "bench press"],
+    "muscle_groups": ["legs", "back", "chest"],
+    "workout_type": "strength",
+    "difficulty_level": "intermediate",
+    "scraped_at": "2024-09-15T10:30:00"
+  }
+]
