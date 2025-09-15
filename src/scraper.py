@@ -1,78 +1,110 @@
 import requests
-from bs4 import BeautifulSoup
-import logging
+import time
 import json
+from bs4 import BeautifulSoup
+from datetime import datetime
+import logging
 import os
-
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+from urllib.parse import urljoin
 
 class TNationScraper:
     def __init__(self):
         self.base_url = "https://www.t-nation.com"
-        self.visited = set()
-        self.output_file = os.path.join("data", "sample_output.json")
+        self.session = requests.Session()
+        
+        # Headers to mimic a real browser
+        self.session.headers.update({
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        })
+        
+        self.retry_delays = [1, 2, 4, 8]
+        
+        # Setup logging
+        logging.basicConfig(
+            level=logging.INFO,
+            format='%(asctime)s - %(levelname)s - %(message)s',
+            handlers=[
+                logging.FileHandler('tnation_scraper.log'),
+                logging.StreamHandler()
+            ]
+        )
+        self.logger = logging.getLogger(__name__)
+        
+        os.makedirs('data', exist_ok=True)
 
-    def fetch_articles(self):
-        url = f"{self.base_url}/training/"
-        headers = {"User-Agent": "Mozilla/5.0"}
-        response = requests.get(url, headers=headers)
-        soup = BeautifulSoup(response.text, "html.parser")
-
-        # Find all article links (they usually start with /t/)
-        links = [a["href"] for a in soup.find_all("a", href=True)]
-        articles = [self.base_url + link for link in links if self.is_valid_article(link)]
-
-        logger.info(f"Found {len(articles)} articles to scrape")
-        return articles
-
-    def is_valid_article(self, url):
-        """Match URLs like /t/some-article-title/12345"""
-        return url.startswith("/t/") and url not in self.visited
-
-    def scrape_article(self, url):
-        headers = {"User-Agent": "Mozilla/5.0"}
-        response = requests.get(url, headers=headers)
-        soup = BeautifulSoup(response.text, "html.parser")
-
-        # Title is usually in <h1>
-        title = soup.find("h1")
-        title = title.get_text(strip=True) if title else "No Title"
-
-        # Content is inside article tags
-        paragraphs = soup.select("article p")
-        content = "\n".join([p.get_text(strip=True) for p in paragraphs])
-
-        return {"url": url, "title": title, "content": content}
-
-    def run(self):
-        logger.info("Starting T-Nation scraper...")
-        articles = self.fetch_articles()
-        results = []
-
-        for relative_url in articles:
-            full_url = relative_url if relative_url.startswith("http") else self.base_url + relative_url
-            if full_url in self.visited:
-                continue
-            self.visited.add(full_url)
-
+    def scrape_with_backoff(self, url, max_retries=4):
+        """Request with retries and backoff"""
+        for attempt in range(max_retries):
             try:
-                data = self.scrape_article(full_url)
-                results.append(data)
-                logger.info(f"Scraped: {data['title']}")
-            except Exception as e:
-                logger.error(f"Failed to scrape {full_url}: {e}")
+                response = self.session.get(url, timeout=15)
+                if response.status_code == 200:
+                    return response
+                elif response.status_code in [403, 429]:
+                    delay = self.retry_delays[min(attempt, len(self.retry_delays)-1)]
+                    self.logger.warning(f"{response.status_code} error. Waiting {delay}s...")
+                    time.sleep(delay)
+            except requests.RequestException as e:
+                self.logger.error(f"Request failed {url}: {e}")
+                time.sleep(self.retry_delays[min(attempt, len(self.retry_delays)-1)])
+        return None
 
-        # Save results
-        with open(self.output_file, "w", encoding="utf-8") as f:
-            json.dump(results, f, indent=2, ensure_ascii=False)
+    def get_article_links(self):
+        """Discover article links from T-Nation"""
+        self.logger.info("Starting article discovery...")
 
-        logger.info(f"Scraping complete. Saved {len(results)} articles")
+        article_links = set()
 
+        start_pages = [
+            f"{self.base_url}/t/",
+            f"{self.base_url}/t/training",
+            f"{self.base_url}/t/nutrition",
+            f"{self.base_url}/t/supplements",
+        ]
 
-if __name__ == "__main__":
-    scraper = TNationScraper()
-    scraper.run()
+        for page_url in start_pages:
+            self.logger.info(f"Checking page: {page_url}")
+            page_links = self._get_links_from_page(page_url)
+            article_links.update(page_links)
+            time.sleep(1)
 
+        final_links = list(article_links)
+        self.logger.info(f"Total unique article links discovered: {len(final_links)}")
+
+        for i, link in enumerate(final_links[:10]):
+            self.logger.info(f"Sample {i+1}: {link}")
+
+        return final_links[:20]
+
+    def _get_links_from_page(self, page_url):
+        """Extract links that look like articles"""
+        response = self.scrape_with_backoff(page_url)
+        if not response:
+            return []
+
+        soup = BeautifulSoup(response.content, 'html.parser')
+        links = []
+
+        for link in soup.find_all('a', href=True):
+            href = link['href']
+            if href.startswith("/t/"):
+                # Skip non-article pages
+                if any(skip in href for skip in ["/t/tag/", "/t/categories/", "/t/authors/"]):
+                    continue
+                full_url = urljoin(self.base_url, href)
+                links.append(full_url)
+
+        self.logger.info(f"Found {len(links)} article-like links on {page_url}")
+        return links
+
+    def scrape_article(self, article_url):
+        """Scrape article details"""
+        self.logger.info(f"Scraping: {article_url}")
+        response = self.scrape_with_backoff(article_url)
+        if not response:
+            return None
+
+        soup = BeautifulSoup(response.content, 'html.parser')
+
+        title = self.safe
 
 
